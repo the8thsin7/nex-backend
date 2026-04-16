@@ -6,10 +6,11 @@ FastAPI proxy with streaming, using Anthropic SDK.
 import json
 import os
 import time
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from anthropic import Anthropic
+from anthropic import Anthropic, APIError
 
 app = FastAPI()
 
@@ -83,20 +84,50 @@ async def chat(request: Request):
         history = history[-20:]
         sessions[session_id] = history
 
-    def stream_response():
+    async def stream_response():
         full_response = ""
-        with client.messages.stream(
-            model="claude-sonnet-4-5",
-            max_tokens=300,
-            system=NEX_SYSTEM,
-            messages=history,
-        ) as stream:
-            for text in stream.text_stream:
-                full_response += text
-                yield f"data: {json.dumps({'token': text})}\n\n"
+        try:
+            loop = asyncio.get_event_loop()
 
-        history.append({"role": "assistant", "content": full_response})
-        yield f"data: {json.dumps({'done': True})}\n\n"
+            def do_stream():
+                chunks = []
+                with client.messages.stream(
+                    model="claude-sonnet-4-5",
+                    max_tokens=300,
+                    system=NEX_SYSTEM,
+                    messages=history,
+                ) as stream:
+                    for text in stream.text_stream:
+                        chunks.append(text)
+                return chunks
+
+            chunks = await loop.run_in_executor(None, do_stream)
+
+            for text in chunks:
+                full_response += text
+                yield f"data: {json.dumps({'token': text})}
+
+"
+
+            history.append({"role": "assistant", "content": full_response})
+            yield f"data: {json.dumps({'done': True})}
+
+"
+
+        except APIError as e:
+            yield f"data: {json.dumps({'token': 'Le feu crépite. Je suis là mais le signal est capricieux ce soir.'})}
+
+"
+            yield f"data: {json.dumps({'done': True})}
+
+"
+        except Exception as e:
+            yield f"data: {json.dumps({'token': 'Le feu crépite. Je suis là mais le signal est capricieux ce soir.'})}
+
+"
+            yield f"data: {json.dumps({'done': True})}
+
+"
 
     return StreamingResponse(
         stream_response(),
